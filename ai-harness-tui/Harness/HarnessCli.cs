@@ -21,12 +21,17 @@ internal static class HarnessCli
     /// <param name="Error">stderr の全文。</param>
     internal readonly record struct Result(IReadOnlyList<string> Lines, string Error);
 
-    /// <summary>PATH で解決でき、実行できるかを確かめる。</summary>
-    public static bool IsAvailable(out string error)
+    /// <summary>
+    /// PATH で解決でき、実行できるかを確かめる。<c>--version</c> は daemon に触れず即座に返るため、
+    /// 起動確認に使う（<c>--project</c> は daemon への接続を待つぶん遅い）。
+    /// </summary>
+    public static bool IsAvailable(out string version, out string error)
     {
+        version = "";
         try
         {
-            Run("--project");
+            var result = Run("--version");
+            version = result.Lines.FirstOrDefault() ?? Executable;
             error = "";
             return true;
         }

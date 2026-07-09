@@ -19,6 +19,9 @@ internal static class Dashboard
     /// <summary>キー入力待ちのポーリング間隔。</summary>
     private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(50);
 
+    /// <summary>起動時に <c>ai-harness-main --version</c> から得た版（パネル見出しに出す）。</summary>
+    private static string _version = "ai-harness";
+
     public static int Run()
     {
         // 端末が無いとカーソル制御もキー入力（Console.KeyAvailable）も例外になる。
@@ -31,11 +34,12 @@ internal static class Dashboard
             return 1;
         }
 
-        if (!HarnessCli.IsAvailable(out var error))
+        if (!HarnessCli.IsAvailable(out var version, out var error))
         {
             AnsiConsole.MarkupLine($"[red]{Markup.Escape(error)}[/]");
             return 1;
         }
+        _version = version;
 
         var state = new DashboardState { LogCapacity = LogCapacity() };
         state.Reload();
@@ -146,17 +150,23 @@ internal static class Dashboard
         layout["footer"].Update(Footer(state));
     }
 
-    /// <summary>左欄はディレクトリ名だけに切り詰めるので、選択中の対象はここでフルパスを示す。</summary>
+    /// <summary>
+    /// 左欄はディレクトリ名だけに切り詰めるので、選択中の対象はここでフルパスを示す。
+    /// 取得に失敗しているときは、フルパスの代わりに理由を出す。
+    /// </summary>
     private static IRenderable Header(DashboardState state)
     {
         var daemon = state.DaemonRunning ? "[green]running[/]" : "[red]stopped[/]";
         var projects = state.Targets.Count - 1;
-        var selected = Truncate(state.Selected ?? DashboardState.HarnessLabel, WindowWidth() - 6);
+
+        var second = state.Error is { } error
+            ? $"[red]{Markup.Escape(Truncate(error, WindowWidth() - 6))}[/]"
+            : $"[grey]{Markup.Escape(Truncate(state.Selected ?? DashboardState.HarnessLabel, WindowWidth() - 6))}[/]";
 
         var rows = new Rows(
             new Markup($"daemon: {daemon}   memory: {projects} project(s)"),
-            new Markup($"[grey]{Markup.Escape(selected)}[/]"));
-        return new Panel(rows).Header("ai-harness").Expand();
+            new Markup(second));
+        return new Panel(rows).Header(Markup.Escape(_version)).Expand();
     }
 
     private static IRenderable Targets(DashboardState state)
@@ -184,26 +194,30 @@ internal static class Dashboard
         return name.Length > 0 ? name : target;
     }
 
+    /// <summary>
+    /// 実行体自身を選んでいるときは lib のインストール一覧なので、有効状態の代わりに説明を出す
+    /// （どのプロジェクトの話でもないため、そこに enabled は存在しない）。
+    /// </summary>
     private static IRenderable Plugins(DashboardState state)
     {
+        var libView = state.Selected is null;
         var table = new Table().Border(TableBorder.None).Expand();
         table.AddColumn("name");
-        table.AddColumn(state.Selected is null ? "installed" : "enabled");
+        table.AddColumn(libView ? "description" : "enabled");
 
+        var width = PluginDescriptionWidth();
         foreach (var plugin in state.Plugins)
         {
-            table.AddRow(Markup.Escape(plugin.Name), EnabledMark(plugin.Enabled));
+            var second = libView
+                ? Markup.Escape(Truncate(plugin.Description, width))
+                : EnabledMark(plugin.Enabled);
+            table.AddRow(Markup.Escape(plugin.Name), second);
         }
-        return new Panel(table).Header("plugins").Expand();
+        return new Panel(table).Header(libView ? "plugins (lib)" : "plugins").Expand();
     }
 
-    /// <summary>lib 一覧（有効状態を持たない）では導入済みを示すだけ。</summary>
-    private static string EnabledMark(bool? enabled) => enabled switch
-    {
-        true => "[green]true[/]",
-        false => "[grey]false[/]",
-        null => "[green]yes[/]",
-    };
+    private static string EnabledMark(bool? enabled) =>
+        enabled == true ? "[green]true[/]" : "[grey]false[/]";
 
     private static IRenderable Logs(DashboardState state)
     {
@@ -243,12 +257,54 @@ internal static class Dashboard
         text.Length <= width ? text : string.Concat(text.AsSpan(0, Math.Max(0, width - 1)), "…");
 
     // ---- 端末サイズ ----
+    //
+    // BuildLayout の Size / Ratio から逆算する。値をここに集約し、レイアウトを変えたら
+    // ここだけ直せば済むようにする（Spectre は確定した割り当て幅を教えてくれない）。
 
-    /// <summary>枠・ヘッダ・フッタ・プラグイン欄を除いた、ログに使える行数の概算。</summary>
-    private static int LogCapacity() => Math.Max(5, WindowHeight() - 18);
+    /// <summary>header の Size。</summary>
+    private const int HeaderHeight = 4;
 
-    /// <summary>ログ本文に使える桁数の概算（左欄と time／level 列を除く）。</summary>
-    private static int ContentsWidth() => Math.Max(20, (WindowWidth() * 2 / 3) - 30);
+    /// <summary>footer の Size。</summary>
+    private const int FooterHeight = 3;
+
+    /// <summary>パネルの上下枠 2 行＋テーブルのヘッダ 1 行。</summary>
+    private const int PanelChrome = 3;
+
+    /// <summary>detail 内で logs が占める比（plugins 1 : logs 2）。</summary>
+    private const int LogsRatio = 2;
+
+    private const int DetailRatioTotal = 3;
+
+    /// <summary>body 内で detail が占める比（targets 1 : detail 2）。</summary>
+    private const int DetailRatio = 2;
+
+    private const int BodyRatioTotal = 3;
+
+    /// <summary>logs テーブルの time／level 列と、テーブル・パネルの余白の合計。</summary>
+    private const int LogFixedColumns = 27;
+
+    /// <summary>plugins テーブルの name 列と、テーブル・パネルの余白の合計。</summary>
+    private const int PluginNameColumn = 32;
+
+    private const int MinLogRows = 5;
+    private const int MinTextWidth = 10;
+
+    /// <summary>logs パネルに収まる行数。</summary>
+    private static int LogCapacity()
+    {
+        var body = WindowHeight() - HeaderHeight - FooterHeight;
+        var logsHeight = body * LogsRatio / DetailRatioTotal;
+        return Math.Max(MinLogRows, logsHeight - PanelChrome);
+    }
+
+    /// <summary>右側（plugins／logs）の桁数。</summary>
+    private static int DetailWidth() => WindowWidth() * DetailRatio / BodyRatioTotal;
+
+    /// <summary>ログ本文に使える桁数。</summary>
+    private static int ContentsWidth() => Math.Max(MinTextWidth, DetailWidth() - LogFixedColumns);
+
+    /// <summary>プラグインの説明に使える桁数。</summary>
+    private static int PluginDescriptionWidth() => Math.Max(MinTextWidth, DetailWidth() - PluginNameColumn);
 
     private static int WindowHeight() => Safe(() => Console.WindowHeight, 30);
 

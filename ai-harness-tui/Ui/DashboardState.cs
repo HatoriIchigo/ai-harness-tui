@@ -41,10 +41,16 @@ internal sealed class DashboardState
     public int LogCapacity { get; set; } = 20;
 
     /// <summary>
+    /// 直近の取得で起きた失敗（実行体が消えた等）。成功すると <c>null</c> に戻る。
+    /// 取得は子プロセス起動なので失敗し得る。画面を落とさず、理由を出して次の周期で回復させる。
+    /// </summary>
+    public string? Error { get; private set; }
+
+    /// <summary>
     /// プロジェクト一覧を取り直し、選択中の対象の詳細も更新する。
     /// 回収などで選択中のプロジェクトが消えていたら実行体自身へ戻す。
     /// </summary>
-    public void Reload()
+    public void Reload() => Guard(() =>
     {
         var projects = HarnessQuery.QueryProjects();
         DaemonRunning = projects.DaemonRunning;
@@ -56,15 +62,11 @@ internal sealed class DashboardState
 
         var restored = _targets.IndexOf(previous);
         Index = restored >= 0 ? restored : 0;
-        ReloadDetail();
-    }
+        LoadDetail();
+    });
 
     /// <summary>選択中の対象のプラグインとログだけを取り直す。</summary>
-    public void ReloadDetail()
-    {
-        Plugins = HarnessQuery.QueryPlugins(Selected);
-        Logs = HarnessQuery.QueryLogs(Selected, LogCapacity, Filter);
-    }
+    public void ReloadDetail() => Guard(LoadDetail);
 
     /// <summary>選択を <paramref name="delta"/> 件動かす（範囲外へは出ない）。動いたら詳細を取り直す。</summary>
     public void Move(int delta)
@@ -82,6 +84,28 @@ internal sealed class DashboardState
     public void CycleFilter()
     {
         Filter = Filter.Next();
-        Logs = HarnessQuery.QueryLogs(Selected, LogCapacity, Filter);
+        Guard(LoadLogs);
+    }
+
+    private void LoadDetail()
+    {
+        Plugins = HarnessQuery.QueryPlugins(Selected);
+        LoadLogs();
+    }
+
+    private void LoadLogs() => Logs = HarnessQuery.QueryLogs(Selected, LogCapacity, Filter);
+
+    /// <summary>取得の失敗を <see cref="Error"/> に畳む。直前の表示内容はそのまま残す。</summary>
+    private void Guard(Action load)
+    {
+        try
+        {
+            load();
+            Error = null;
+        }
+        catch (Exception ex)
+        {
+            Error = $"{ex.GetType().Name}: {ex.Message}";
+        }
     }
 }

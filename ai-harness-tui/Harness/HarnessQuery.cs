@@ -25,8 +25,8 @@ internal static class HarnessQuery
     }
 
     /// <summary>
-    /// プラグイン一覧。<paramref name="target"/> 指定時は <c>enabled</c> 列、
-    /// 無指定時は <c>description</c> 列が返るので、有効状態は <c>null</c> になる。
+    /// プラグイン一覧。3 列目は <paramref name="target"/> 指定時が <c>enabled</c>、
+    /// 無指定時は <c>description</c>。どちらか一方しか得られない。
     /// </summary>
     public static List<PluginRow> QueryPlugins(string? target)
     {
@@ -35,7 +35,9 @@ internal static class HarnessQuery
             : HarnessCli.Run("--plugin", target);
 
         return TableParser.ParseRows(result.Lines, 3)
-            .Select(cells => new PluginRow(cells[1], target is null ? null : cells[2] == "true"))
+            .Select(cells => target is null
+                ? new PluginRow(cells[1], null, cells[2])
+                : new PluginRow(cells[1], cells[2] == "true", ""))
             .ToList();
     }
 
