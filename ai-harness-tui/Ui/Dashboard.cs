@@ -5,8 +5,12 @@ using Spectre.Console.Rendering;
 namespace ai_harness_tui;
 
 /// <summary>
-/// 画面本体。左に対象（実行体＋メモリ上のプロジェクト）、右上にプラグイン、右下にログを置き、
-/// <c>Live</c> で同じ領域を再描画し続ける。
+/// 画面本体。上部に <c>plugins</c>／<c>log</c> のボタン（それだけ）、中央にそのどちらか 1 つ、下部に
+/// neovim 風のステータスライン（対象・ブランチ・版・daemon）を置き、<c>Live</c> で再描画し続ける。
+///
+/// 状態を語るのはステータスライン（<see cref="StatusLine"/>）に一本化し、上部は「いまどのビューにいるか」
+/// だけを示す。対象（実行体＋メモリ上のプロジェクト）も画面に常駐させず、<c>p</c> のポップアップで選ぶ。
+/// これで本体の 1 ビューに端末の幅と行数を全部渡せる。
 ///
 /// 一定間隔で <c>ai-harness-main</c> を叩き直すので、daemon がプロジェクトを回収したり
 /// 新しいプロジェクトが hook で立ち上がったりすると、そのまま画面に反映される。
@@ -19,7 +23,7 @@ internal static class Dashboard
     /// <summary>キー入力待ちのポーリング間隔。</summary>
     private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(50);
 
-    /// <summary>起動時に <c>ai-harness-main --version</c> から得た版（パネル見出しに出す）。</summary>
+    /// <summary>起動時に <c>ai-harness-main --version</c> から得た版（ボタン行の右に出す）。</summary>
     private static string _version = "ai-harness";
 
     public static int Run()
@@ -75,13 +79,9 @@ internal static class Dashboard
 
     private static Layout BuildLayout() =>
         new Layout("root").SplitRows(
-            new Layout("header").Size(4),
-            new Layout("body").SplitColumns(
-                new Layout("targets").Ratio(1),
-                new Layout("detail").Ratio(2).SplitRows(
-                    new Layout("plugins").Ratio(1),
-                    new Layout("logs").Ratio(2))),
-            new Layout("footer").Size(3));
+            new Layout("tabs").Size(TabsHeight),
+            new Layout("body"),
+            new Layout("status").Size(StatusHeight));
 
     private static void Loop(LiveDisplayContext context, Layout layout, DashboardState state)
     {
@@ -115,18 +115,40 @@ internal static class Dashboard
     /// <summary>キーを処理する。終了したいとき <c>false</c>。</summary>
     private static bool HandleKey(ConsoleKey key, DashboardState state)
     {
+        // ポップアップは前面。開いている間は本体のキーを食わせない（nvim のモーダルと同じ）。
+        if (state.PopupOpen)
+        {
+            return HandlePopupKey(key, state);
+        }
+
         switch (key)
         {
             case ConsoleKey.Q:
             case ConsoleKey.Escape:
                 return false;
+            case ConsoleKey.P:
+                state.OpenPopup();
+                return true;
+            case ConsoleKey.Tab:
+            case ConsoleKey.LeftArrow:
+            case ConsoleKey.RightArrow:
+            case ConsoleKey.H:
+            case ConsoleKey.L:
+                state.ToggleView();
+                return true;
+            case ConsoleKey.D1:
+                state.Show(DashboardView.Plugins);
+                return true;
+            case ConsoleKey.D2:
+                state.Show(DashboardView.Log);
+                return true;
             case ConsoleKey.UpArrow:
             case ConsoleKey.K:
-                state.Move(-1);
+                state.ScrollBy(-1);
                 return true;
             case ConsoleKey.DownArrow:
             case ConsoleKey.J:
-                state.Move(1);
+                state.ScrollBy(1);
                 return true;
             case ConsoleKey.F:
                 state.CycleFilter();
@@ -139,60 +161,59 @@ internal static class Dashboard
         }
     }
 
+    /// <summary>ポップアップ表示中のキー。確定するまで対象は動かない。</summary>
+    private static bool HandlePopupKey(ConsoleKey key, DashboardState state)
+    {
+        switch (key)
+        {
+            case ConsoleKey.Escape:
+            case ConsoleKey.P:
+            case ConsoleKey.Q:
+                state.ClosePopup();
+                return true;
+            case ConsoleKey.Enter:
+            case ConsoleKey.Spacebar:
+                state.CommitPopup();
+                return true;
+            case ConsoleKey.UpArrow:
+            case ConsoleKey.K:
+                state.MovePopup(-1);
+                return true;
+            case ConsoleKey.DownArrow:
+            case ConsoleKey.J:
+                state.MovePopup(1);
+                return true;
+            default:
+                return true;
+        }
+    }
+
     // ---- 描画 ----
 
     private static void Render(Layout layout, DashboardState state)
     {
-        layout["header"].Update(Header(state));
-        layout["targets"].Update(Targets(state));
-        layout["plugins"].Update(Plugins(state));
-        layout["logs"].Update(Logs(state));
-        layout["footer"].Update(Footer(state));
+        layout["tabs"].Update(Tabs(state));
+        layout["body"].Update(state.PopupOpen ? ProjectPopup.Render(state) : Body(state));
+        layout["status"].Update(StatusLine.Render(state, _version));
     }
 
     /// <summary>
-    /// 左欄はディレクトリ名だけに切り詰めるので、選択中の対象はここでフルパスを示す。
-    /// 取得に失敗しているときは、フルパスの代わりに理由を出す。
+    /// 上部のボタン行。タブだけを置く。版・daemon・プロジェクト数はステータスラインへ集約したので、
+    /// ここは「いまどのビューにいるか」しか語らない。
     /// </summary>
-    private static IRenderable Header(DashboardState state)
+    private static IRenderable Tabs(DashboardState state) =>
+        new Markup($" {Button(state, DashboardView.Plugins)} {Button(state, DashboardView.Log)}");
+
+    /// <summary>選択中のボタンはステータスラインと同じ黄緑で塗り、両者が同じ画面の一部だと分かるようにする。</summary>
+    private static string Button(DashboardState state, DashboardView view)
     {
-        var daemon = state.DaemonRunning ? "[green]running[/]" : "[red]stopped[/]";
-        var projects = state.Targets.Count - 1;
-
-        var second = state.Error is { } error
-            ? $"[red]{Markup.Escape(Truncate(error, WindowWidth() - 6))}[/]"
-            : $"[grey]{Markup.Escape(Truncate(state.Selected ?? DashboardState.HarnessLabel, WindowWidth() - 6))}[/]";
-
-        var rows = new Rows(
-            new Markup($"daemon: {daemon}   memory: {projects} project(s)"),
-            new Markup(second));
-        return new Panel(rows).Header(Markup.Escape(_version)).Expand();
+        var label = view.Label();
+        return state.View == view ? $"[black on greenyellow] {label} [/]" : $"[grey] {label} [/]";
     }
 
-    private static IRenderable Targets(DashboardState state)
-    {
-        var rows = new List<IRenderable>();
-        for (var i = 0; i < state.Targets.Count; i++)
-        {
-            var text = Markup.Escape(ShortName(state.Targets[i]));
-            rows.Add(new Markup(i == state.Index ? $"[invert]{text}[/]" : text));
-        }
-        return new Panel(new Rows(rows)).Header("targets").Expand();
-    }
-
-    /// <summary>
-    /// プロジェクトルートの末尾セグメント（ディレクトリ名）。区切りは <c>\</c> と <c>/</c> の両方を受ける。
-    /// ドライブ直下など末尾を取り出せない場合はフルパスのまま返す。
-    /// </summary>
-    private static string ShortName(string? target)
-    {
-        if (target is null)
-        {
-            return DashboardState.HarnessLabel;
-        }
-        var name = Path.GetFileName(target.TrimEnd('\\', '/'));
-        return name.Length > 0 ? name : target;
-    }
+    /// <summary>本体。ボタンで選ばれている 1 ビューだけを出す。</summary>
+    private static IRenderable Body(DashboardState state) =>
+        state.View == DashboardView.Plugins ? Plugins(state) : LogView.Render(state);
 
     /// <summary>
     /// 実行体自身を選んでいるときは lib のインストール一覧なので、有効状態の代わりに説明を出す
@@ -209,7 +230,7 @@ internal static class Dashboard
         foreach (var plugin in state.Plugins)
         {
             var second = libView
-                ? Markup.Escape(Truncate(plugin.Description, width))
+                ? Markup.Escape(Term.Truncate(plugin.Description, width))
                 : EnabledMark(plugin.Enabled);
             table.AddRow(Markup.Escape(plugin.Name), second);
         }
@@ -219,69 +240,19 @@ internal static class Dashboard
     private static string EnabledMark(bool? enabled) =>
         enabled == true ? "[green]true[/]" : "[grey]false[/]";
 
-    private static IRenderable Logs(DashboardState state)
-    {
-        var table = new Table().Border(TableBorder.None).Expand();
-        table.AddColumn("time");
-        table.AddColumn("level");
-        table.AddColumn("contents");
-
-        var width = ContentsWidth();
-        foreach (var log in state.Logs.Take(state.LogCapacity))
-        {
-            table.AddRow(
-                Markup.Escape(ShortTime(log.Time)),
-                $"[{LevelColor(log.Level)}]{Markup.Escape(log.Level)}[/]",
-                Markup.Escape(Truncate(log.Contents, width)));
-        }
-        return new Panel(table).Header($"logs (newest first, {state.Filter.Label()})").Expand();
-    }
-
-    private static IRenderable Footer(DashboardState state) =>
-        new Panel(new Markup(
-            $"[bold]↑↓/jk[/] 選択   [bold]f[/] フィルタ: {state.Filter.Label()}   [bold]r[/] 再取得   [bold]q[/] 終了"))
-            .Expand();
-
-    private static string LevelColor(string level) => level switch
-    {
-        "error" => "red",
-        "warn" => "yellow",
-        "info" => "default",
-        _ => "grey",
-    };
-
-    /// <summary>年を落として <c>MM-dd HH:mm:ss</c> にする。狭い端末で本文に幅を譲るため。</summary>
-    private static string ShortTime(string time) => time.Length >= 19 ? time[5..] : time;
-
-    private static string Truncate(string text, int width) =>
-        text.Length <= width ? text : string.Concat(text.AsSpan(0, Math.Max(0, width - 1)), "…");
-
     // ---- 端末サイズ ----
     //
-    // BuildLayout の Size / Ratio から逆算する。値をここに集約し、レイアウトを変えたら
-    // ここだけ直せば済むようにする（Spectre は確定した割り当て幅を教えてくれない）。
+    // BuildLayout の Size から逆算する。値をここに集約し、レイアウトを変えたらここだけ直せば済むように
+    // する（Spectre は確定した割り当て幅を教えてくれない）。本体は単一ビューなので、幅も高さも丸ごと使える。
 
-    /// <summary>header の Size。</summary>
-    private const int HeaderHeight = 4;
+    /// <summary>tabs の Size（ボタン行 1 行）。</summary>
+    private const int TabsHeight = 1;
 
-    /// <summary>footer の Size。</summary>
-    private const int FooterHeight = 3;
+    /// <summary>status の Size（ステータスライン＋キー案内）。</summary>
+    private const int StatusHeight = 2;
 
     /// <summary>パネルの上下枠 2 行＋テーブルのヘッダ 1 行。</summary>
     private const int PanelChrome = 3;
-
-    /// <summary>detail 内で logs が占める比（plugins 1 : logs 2）。</summary>
-    private const int LogsRatio = 2;
-
-    private const int DetailRatioTotal = 3;
-
-    /// <summary>body 内で detail が占める比（targets 1 : detail 2）。</summary>
-    private const int DetailRatio = 2;
-
-    private const int BodyRatioTotal = 3;
-
-    /// <summary>logs テーブルの time／level 列と、テーブル・パネルの余白の合計。</summary>
-    private const int LogFixedColumns = 27;
 
     /// <summary>plugins テーブルの name 列と、テーブル・パネルの余白の合計。</summary>
     private const int PluginNameColumn = 32;
@@ -289,38 +260,10 @@ internal static class Dashboard
     private const int MinLogRows = 5;
     private const int MinTextWidth = 10;
 
-    /// <summary>logs パネルに収まる行数。</summary>
-    private static int LogCapacity()
-    {
-        var body = WindowHeight() - HeaderHeight - FooterHeight;
-        var logsHeight = body * LogsRatio / DetailRatioTotal;
-        return Math.Max(MinLogRows, logsHeight - PanelChrome);
-    }
-
-    /// <summary>右側（plugins／logs）の桁数。</summary>
-    private static int DetailWidth() => WindowWidth() * DetailRatio / BodyRatioTotal;
-
-    /// <summary>ログ本文に使える桁数。</summary>
-    private static int ContentsWidth() => Math.Max(MinTextWidth, DetailWidth() - LogFixedColumns);
+    /// <summary>本体（単一ビュー）に収まる行数。ログの桁は <see cref="LogView"/> が自前で持つ。</summary>
+    private static int LogCapacity() =>
+        Math.Max(MinLogRows, Term.Height - TabsHeight - StatusHeight - PanelChrome);
 
     /// <summary>プラグインの説明に使える桁数。</summary>
-    private static int PluginDescriptionWidth() => Math.Max(MinTextWidth, DetailWidth() - PluginNameColumn);
-
-    private static int WindowHeight() => Safe(() => Console.WindowHeight, 30);
-
-    private static int WindowWidth() => Safe(() => Console.WindowWidth, 120);
-
-    /// <summary>端末に接続していない（リダイレクト等）場合は既定値へ倒す。</summary>
-    private static int Safe(Func<int> read, int fallback)
-    {
-        try
-        {
-            var value = read();
-            return value > 0 ? value : fallback;
-        }
-        catch (IOException)
-        {
-            return fallback;
-        }
-    }
+    private static int PluginDescriptionWidth() => Math.Max(MinTextWidth, Term.Width - PluginNameColumn);
 }

@@ -4,7 +4,8 @@ namespace ai_harness_tui;
 /// 画面が表示している内容。<c>ai-harness-main</c> の呼び出しは全てここに集約し、描画側は読むだけにする。
 ///
 /// 対象リストの先頭は常にハーネス実行体自身（<see cref="HarnessTarget"/>＝<c>null</c>）で、
-/// 以降が daemon のメモリ上にあるプロジェクト。
+/// 以降が daemon のメモリ上にあるプロジェクト。対象は画面に常駐させず、<c>p</c> のポップアップで選ぶ。
+/// 本体には <see cref="View"/> の 1 ビューだけを出す。
 /// </summary>
 internal sealed class DashboardState
 {
@@ -19,25 +20,40 @@ internal sealed class DashboardState
     /// <summary>選択中の対象（実行体自身なら <c>null</c>）。</summary>
     public string? Selected => _targets[Index];
 
-    /// <summary>対象一覧（先頭は実行体自身）。</summary>
+    /// <summary>対象一覧（先頭は実行体自身）。ポップアップの選択肢。</summary>
     public IReadOnlyList<string?> Targets => _targets;
 
     /// <summary>選択位置。</summary>
     public int Index { get; private set; }
 
+    /// <summary>本体に出しているビュー（上部ボタン）。</summary>
+    public DashboardView View { get; private set; } = DashboardView.Log;
+
+    /// <summary>プロジェクト選択ポップアップを開いているか。</summary>
+    public bool PopupOpen { get; private set; }
+
+    /// <summary>ポップアップ内のカーソル位置（確定するまで <see cref="Index"/> は動かさない）。</summary>
+    public int PopupIndex { get; private set; }
+
     /// <summary>daemon が稼働しているか。</summary>
     public bool DaemonRunning { get; private set; }
+
+    /// <summary>選択中の対象の git ブランチ。git 管理外・実行体自身なら <c>null</c>。</summary>
+    public string? Branch { get; private set; }
 
     /// <summary>選択中の対象のプラグイン。</summary>
     public IReadOnlyList<PluginRow> Plugins { get; private set; } = [];
 
-    /// <summary>選択中の対象のログ（新しい順）。</summary>
+    /// <summary>選択中の対象のログ（新しい順）。<see cref="Scroll"/> 件目から表示する。</summary>
     public IReadOnlyList<LogRow> Logs { get; private set; } = [];
 
     /// <summary>ログの重大度フィルタ。</summary>
     public LogFilter Filter { get; private set; } = LogFilter.All;
 
-    /// <summary>取得件数。端末の高さに合わせて描画側が更新する。</summary>
+    /// <summary>ログの表示開始位置（新しい順に何件読み飛ばすか）。</summary>
+    public int Scroll { get; private set; }
+
+    /// <summary>本体に収まるログの行数。端末の高さに合わせて描画側が更新する。</summary>
     public int LogCapacity { get; set; } = 20;
 
     /// <summary>
@@ -62,38 +78,94 @@ internal sealed class DashboardState
 
         var restored = _targets.IndexOf(previous);
         Index = restored >= 0 ? restored : 0;
+        PopupIndex = Math.Clamp(PopupIndex, 0, _targets.Count - 1);
         LoadDetail();
     });
+
+    /// <summary>本体のビューを切り替える（上部ボタン）。</summary>
+    public void Show(DashboardView view)
+    {
+        if (View == view)
+        {
+            return;
+        }
+        View = view;
+        Scroll = 0;
+    }
+
+    /// <summary>もう一方のビューへ切り替える。</summary>
+    public void ToggleView() => Show(View.Other());
+
+    /// <summary>プロジェクト選択ポップアップを開く。カーソルは現在の選択に合わせる。</summary>
+    public void OpenPopup()
+    {
+        PopupOpen = true;
+        PopupIndex = Index;
+    }
+
+    /// <summary>選択を確定せずポップアップを閉じる。</summary>
+    public void ClosePopup() => PopupOpen = false;
+
+    /// <summary>ポップアップのカーソルを動かす（範囲外へは出ない）。</summary>
+    public void MovePopup(int delta) =>
+        PopupIndex = Math.Clamp(PopupIndex + delta, 0, _targets.Count - 1);
+
+    /// <summary>ポップアップの選択を確定し、対象を切り替えて詳細を取り直す。</summary>
+    public void CommitPopup()
+    {
+        PopupOpen = false;
+        if (PopupIndex == Index)
+        {
+            return;
+        }
+        Index = PopupIndex;
+        Scroll = 0;
+        ReloadDetail();
+    }
 
     /// <summary>選択中の対象のプラグインとログだけを取り直す。</summary>
     public void ReloadDetail() => Guard(LoadDetail);
 
-    /// <summary>選択を <paramref name="delta"/> 件動かす（範囲外へは出ない）。動いたら詳細を取り直す。</summary>
-    public void Move(int delta)
+    /// <summary>
+    /// ログの表示位置を <paramref name="delta"/> 件動かす。
+    /// 取得件数に届いていない（これ以上古いログが無い）方向へは進めない。
+    /// </summary>
+    public void ScrollBy(int delta)
     {
-        var next = Math.Clamp(Index + delta, 0, _targets.Count - 1);
-        if (next == Index)
+        if (View != DashboardView.Log)
         {
             return;
         }
-        Index = next;
-        ReloadDetail();
+        var next = Math.Max(0, Scroll + delta);
+        if (next > Scroll && Logs.Count <= Scroll + LogCapacity)
+        {
+            return;   // 末尾まで見えている。これ以上は無い。
+        }
+        if (next == Scroll)
+        {
+            return;
+        }
+        Scroll = next;
+        Guard(LoadLogs);
     }
 
     /// <summary>フィルタを次の候補へ進め、ログを取り直す。</summary>
     public void CycleFilter()
     {
         Filter = Filter.Next();
+        Scroll = 0;
         Guard(LoadLogs);
     }
 
     private void LoadDetail()
     {
+        Branch = GitBranch.Resolve(Selected);
         Plugins = HarnessQuery.QueryPlugins(Selected);
         LoadLogs();
     }
 
-    private void LoadLogs() => Logs = HarnessQuery.QueryLogs(Selected, LogCapacity, Filter);
+    /// <summary>読み飛ばす分も含めて取る（<c>--logs</c> は新しい順に上位 N 件しか返さないため）。</summary>
+    private void LoadLogs() => Logs = HarnessQuery.QueryLogs(Selected, Scroll + LogCapacity, Filter);
 
     /// <summary>取得の失敗を <see cref="Error"/> に畳む。直前の表示内容はそのまま残す。</summary>
     private void Guard(Action load)
