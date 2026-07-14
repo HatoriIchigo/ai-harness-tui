@@ -1,10 +1,13 @@
 namespace ai_harness_tui;
 
 /// <summary>
-/// <c>ai-harness-main</c> の情報表示サブコマンドを型付きで叩く。
+/// <c>ai-harness-main</c> のサブコマンドを型付きで叩く。
 ///
 /// 対象（<c>target</c>）が <c>null</c> のときはハーネス実行体そのもの
 /// （<c>--logs</c> ならグローバルログ、<c>--plugin</c> なら <c>lib/</c> のインストール一覧）を指す。
+///
+/// 読み取りのほかに、プラグインの有効化（<see cref="SetPluginEnabled"/>）だけを書き込みとして持つ。
+/// 書き換えるのは main であり、TUI は <c>common.yml</c> を直接触らない。
 /// </summary>
 internal static class HarnessQuery
 {
@@ -39,6 +42,44 @@ internal static class HarnessQuery
                 ? new PluginRow(cells[1], null, cells[2])
                 : new PluginRow(cells[1], cells[2] == "true", ""))
             .ToList();
+    }
+
+    /// <summary>プラグインの有効化／無効化の結果。</summary>
+    /// <param name="Ok">切り替えられたか。</param>
+    /// <param name="Reason">拒否・失敗の理由（<paramref name="Ok"/> が <c>true</c> なら空）。</param>
+    internal readonly record struct Toggle(bool Ok, string Reason);
+
+    /// <summary>
+    /// <paramref name="target"/> のプロジェクトで <paramref name="name"/> を有効化／無効化する
+    /// （<c>--plugin &lt;プロジェクト&gt; --enable|--disable &lt;名&gt;</c>）。<c>common.yml</c> を書き換えるのは main で、
+    /// 設定はホットリロードされるため daemon の再起動は要らない。
+    ///
+    /// main は「有効化するとフェイルクローズ（そのプロジェクトの hook が全 deny）になる」場合、書き込まずに
+    /// 非 0 で拒否する。その理由を拾って呼び出し側へ返す。
+    /// </summary>
+    public static Toggle SetPluginEnabled(string target, string name, bool enable)
+    {
+        var result = HarnessCli.Run("--plugin", target, enable ? "--enable" : "--disable", name);
+        return result.ExitCode == 0
+            ? new Toggle(true, "")
+            : new Toggle(false, Reason(result.Error, enable));
+    }
+
+    /// <summary>
+    /// 拒否の stderr（複数行）から 1 行ぶんの理由を作る。main は見出しに続けて
+    /// <c>- &lt;プラグイン名&gt;: 理由</c> を並べるため、その明細行を優先して拾う。
+    /// </summary>
+    private static string Reason(string stderr, bool enable)
+    {
+        var lines = stderr.Split('\n')
+            .Select(line => line.Trim())
+            .Where(line => line.Length > 0)
+            .ToList();
+
+        var detail = lines.FirstOrDefault(line => line.StartsWith("- ", StringComparison.Ordinal));
+        return detail?[2..]
+            ?? lines.FirstOrDefault()
+            ?? $"{(enable ? "有効化" : "無効化")}に失敗しました。";
     }
 
     /// <summary>新しい順のログを最大 <paramref name="take"/> 件取る。</summary>

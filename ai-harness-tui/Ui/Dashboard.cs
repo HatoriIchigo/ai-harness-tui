@@ -144,11 +144,15 @@ internal static class Dashboard
                 return true;
             case ConsoleKey.UpArrow:
             case ConsoleKey.K:
-                state.ScrollBy(-1);
+                Move(state, -1);
                 return true;
             case ConsoleKey.DownArrow:
             case ConsoleKey.J:
-                state.ScrollBy(1);
+                Move(state, 1);
+                return true;
+            case ConsoleKey.Spacebar:
+            case ConsoleKey.Enter:
+                state.TogglePlugin();
                 return true;
             case ConsoleKey.F:
                 state.CycleFilter();
@@ -159,6 +163,19 @@ internal static class Dashboard
             default:
                 return true;
         }
+    }
+
+    /// <summary>
+    /// <c>jk</c> の意味はビューで変わる。<c>plugins</c> では切り替える行のカーソル、<c>log</c> ではスクロール。
+    /// </summary>
+    private static void Move(DashboardState state, int delta)
+    {
+        if (state.View == DashboardView.Plugins)
+        {
+            state.MovePlugin(delta);
+            return;
+        }
+        state.ScrollBy(delta);
     }
 
     /// <summary>ポップアップ表示中のキー。確定するまで対象は動かない。</summary>
@@ -218,6 +235,9 @@ internal static class Dashboard
     /// <summary>
     /// 実行体自身を選んでいるときは lib のインストール一覧なので、有効状態の代わりに説明を出す
     /// （どのプロジェクトの話でもないため、そこに enabled は存在しない）。
+    ///
+    /// プロジェクトを選んでいるときは、カーソル行を <c>Space</c> で有効／無効に切り替えられる
+    /// （<see cref="DashboardState.TogglePlugin"/>）。カーソルは lib 一覧では出さない。
     /// </summary>
     private static IRenderable Plugins(DashboardState state)
     {
@@ -227,14 +247,26 @@ internal static class Dashboard
         table.AddColumn(libView ? "description" : "enabled");
 
         var width = PluginDescriptionWidth();
-        foreach (var plugin in state.Plugins)
+        for (var i = 0; i < state.Plugins.Count; i++)
         {
+            var plugin = state.Plugins[i];
             var second = libView
                 ? Markup.Escape(Term.Truncate(plugin.Description, width))
                 : EnabledMark(plugin.Enabled);
-            table.AddRow(Markup.Escape(plugin.Name), second);
+            var onCursor = !libView && i == state.PluginIndex;
+            table.AddRow(NameCell(plugin.Name, onCursor), second);
         }
         return new Panel(table).Header(libView ? "plugins (lib)" : "plugins").Expand();
+    }
+
+    /// <summary>
+    /// カーソル行の名前を、選択中のタブと同じ黄緑で塗る（画面全体で「いま選んでいるもの」の色を揃える）。
+    /// 行頭 2 桁はカーソルの有無で変わらないよう、非カーソル行は空白で字下げする。
+    /// </summary>
+    private static string NameCell(string name, bool onCursor)
+    {
+        var escaped = Markup.Escape(name);
+        return onCursor ? $"[black on greenyellow]▸ {escaped} [/]" : $"  {escaped}";
     }
 
     private static string EnabledMark(bool? enabled) =>

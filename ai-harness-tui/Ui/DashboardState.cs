@@ -44,6 +44,9 @@ internal sealed class DashboardState
     /// <summary>選択中の対象のプラグイン。</summary>
     public IReadOnlyList<PluginRow> Plugins { get; private set; } = [];
 
+    /// <summary>plugins ビューのカーソル位置（有効化を切り替える行）。</summary>
+    public int PluginIndex { get; private set; }
+
     /// <summary>選択中の対象のログ（新しい順）。<see cref="Scroll"/> 件目から表示する。</summary>
     public IReadOnlyList<LogRow> Logs { get; private set; } = [];
 
@@ -61,6 +64,12 @@ internal sealed class DashboardState
     /// 取得は子プロセス起動なので失敗し得る。画面を落とさず、理由を出して次の周期で回復させる。
     /// </summary>
     public string? Error { get; private set; }
+
+    /// <summary>
+    /// 直近の切り替えが拒否された理由（成功時は <c>null</c>）。2 秒ごとの再取得では消さない
+    /// ＝読む前に流れないよう、次の切り替えかビュー・対象の変更まで残す。
+    /// </summary>
+    public string? Notice { get; private set; }
 
     /// <summary>
     /// プロジェクト一覧を取り直し、選択中の対象の詳細も更新する。
@@ -91,6 +100,52 @@ internal sealed class DashboardState
         }
         View = view;
         Scroll = 0;
+        Notice = null;
+    }
+
+    /// <summary>plugins ビューのカーソルを動かす（範囲外へは出ない）。</summary>
+    public void MovePlugin(int delta)
+    {
+        if (Plugins.Count == 0)
+        {
+            return;
+        }
+        PluginIndex = Math.Clamp(PluginIndex + delta, 0, Plugins.Count - 1);
+    }
+
+    /// <summary>
+    /// カーソル行のプラグインの有効／無効を反転する（<c>--plugin --enable|--disable</c>）。
+    ///
+    /// 実行体自身を選んでいるときは <c>lib/</c> のインストール一覧＝どのプロジェクトの話でもないため、
+    /// 有効化という概念が無い。<c>p</c> でプロジェクトを選ぶよう促して何もしない。
+    ///
+    /// main が拒否した場合（有効化するとそのプロジェクトの hook が全 deny になる等）は、書き換わって
+    /// いないので取り直さず、理由だけを <see cref="Notice"/> に残す。
+    /// </summary>
+    public void TogglePlugin()
+    {
+        if (View != DashboardView.Plugins || Plugins.Count == 0)
+        {
+            return;
+        }
+        if (Selected is not { } target)
+        {
+            Notice = "有効化はプロジェクトごとの設定です。p でプロジェクトを選んでください。";
+            return;
+        }
+
+        var plugin = Plugins[PluginIndex];
+        var enable = plugin.Enabled != true;
+
+        Guard(() =>
+        {
+            var toggle = HarnessQuery.SetPluginEnabled(target, plugin.Name, enable);
+            Notice = toggle.Ok ? null : toggle.Reason;
+            if (toggle.Ok)
+            {
+                LoadDetail();
+            }
+        });
     }
 
     /// <summary>もう一方のビューへ切り替える。</summary>
@@ -120,6 +175,8 @@ internal sealed class DashboardState
         }
         Index = PopupIndex;
         Scroll = 0;
+        PluginIndex = 0;
+        Notice = null;
         ReloadDetail();
     }
 
@@ -161,6 +218,8 @@ internal sealed class DashboardState
     {
         Branch = GitBranch.Resolve(Selected);
         Plugins = HarnessQuery.QueryPlugins(Selected);
+        // プラグインが増減してもカーソルが表からはみ出さないようにする。
+        PluginIndex = Plugins.Count == 0 ? 0 : Math.Clamp(PluginIndex, 0, Plugins.Count - 1);
         LoadLogs();
     }
 

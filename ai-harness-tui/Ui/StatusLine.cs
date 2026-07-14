@@ -96,12 +96,21 @@ internal static class StatusLine
     }
 
     /// <summary>
-    /// 2 行目。取得に失敗している間は、案内の代わりに理由を赤字で出す
-    /// （画面は落とさず、次の周期で回復させる）。
+    /// 2 行目。取得に失敗している間、および切り替えを拒否されたときは、案内の代わりに理由を赤字で出す
+    /// （画面は落とさず、次の周期で回復させる）。案内はビューごとに要るキーだけを並べる。
     /// </summary>
-    private static string Hint(DashboardState state) =>
-        state.Error is { } error
-            ? $"[red]{Markup.Escape(Term.Truncate(error, Term.Width - 2))}[/]"
+    private static string Hint(DashboardState state)
+    {
+        // 取得の失敗を優先する（画面の内容そのものが古い可能性を先に伝える）。
+        if ((state.Error ?? state.Notice) is { } message)
+        {
+            return $"[red]{Markup.Escape(Term.Truncate(message, Term.Width - 2))}[/]";
+        }
+
+        return state.View == DashboardView.Plugins
+            ? " [bold]p[/] 対象   [bold]Tab[/] 切替   [bold]jk[/] 選択   [bold]Space[/] 有効/無効   "
+                + "[bold]r[/] 再取得   [bold]q[/] 終了"
             : $" [bold]p[/] 対象   [bold]Tab[/] 切替   [bold]jk[/] スクロール   "
                 + $"[bold]f[/] フィルタ: {state.Filter.Label()}   [bold]r[/] 再取得   [bold]q[/] 終了";
+    }
 }
