@@ -95,6 +95,7 @@ daemon を再起動しなくても次の hook から効く。
 | `Space` / `Enter` | カーソル行のプラグインの有効／無効を切り替え（`plugins` 表示中） |
 | `f` | ログの重大度フィルタを循環（`all` → `info+` → `warn+` → `error`） |
 | `r` | 即時に取り直す |
+| `u` | 自己更新の確認モーダルを開く（`Enter` `y` 実行・`Esc` `n` 取消） |
 | `q` / `Esc` | 終了 |
 
 ポップアップは開いている間キーを独占する（nvim のモーダルと同じ）。決定するまで表示中の対象は動かない。
@@ -112,6 +113,23 @@ daemon を再起動しなくても次の hook から効く。
 ダッシュボードの描画跡は残らない。代替画面を持たない端末（ANSI 非対応の旧 `cmd.exe` 等）では、
 終了時に画面をクリアして代替とする。
 
+## 自己更新
+
+`u` で TUI 自身を最新版へ更新する。`ai-harness-main --update` が本体を自己更新するのと同じ発想で、
+稼働中の実行体は自分を上書きできないため、新バイナリを別プロセスの applier として起動して置換する。
+確認モーダルで確定すると Live を抜け、通常コンソールで進捗を見せながら次を行う。
+
+1. 自リポジトリを一時領域へ浅く `git clone` → self-contained single-file で `dotnet publish`。
+2. 新バイナリを `--health` で検証し、`--apply-update` モードで detached 起動して TUI 自身は終了する。
+3. applier（一時領域の新バイナリ）が旧プロセスの終了を待ち、インストール先の実行体を `.bak` へ退避 →
+   新バイナリで上書き → 起動検証（失敗なら旧実行体へロールバック）→ 一時領域を掃除する。detached ゆえ
+   端末に繋がらないため、結果は置換先ディレクトリの `.ai-harness-tui-update.log` に残る。
+
+`ai-harness-main` と違い daemon を持たないため、更新後の自動再起動はしない（完了後に TUI を再度起動する）。
+取得元・ブランチは既定（`HatoriIchigo/ai-harness-tui` の `main`）で、環境変数 `AIH_TUI_REPO` /
+`AIH_TUI_BRANCH` で上書きできる。`dotnet <dll>` 経由の起動や `git` / `dotnet` 不在では自己更新できず、
+`u` 押下時にステータスラインへ理由を出す（single-file 発行の実行体で実行する）。
+
 ## 実行
 
 ```sh
@@ -125,8 +143,9 @@ dotnet run --project ai-harness-tui -c Release
 
 | ファイル | 役割 |
 |---|---|
-| `Program.cs` | エントリ。コンソールを UTF-8 にして画面を起動 |
+| `Program.cs` | エントリ。コンソールを UTF-8 にして画面を起動。`--health` / `--apply-update` は自己更新用に分岐 |
 | `Harness/HarnessCli.cs` | `ai-harness-main` の子プロセス実行（PATH 解決・UTF-8 で読む） |
+| `Harness/TuiSelfUpdater.cs` | `u` の自己更新（clone→publish→`--health` 検証→applier 置換）と `--apply-update` の実体 |
 | `Harness/TableParser.cs` | 等幅テーブルの分解（列数上限つき分割） |
 | `Harness/HarnessQuery.cs` | `--project` / `--plugin` / `--logs` を型付きで叩く。有効化の切り替え（`--enable` / `--disable`）と拒否理由の取り出しもここ |
 | `Harness/GitBranch.cs` | `.git/HEAD` からブランチ名を求める（`git` は起動しない） |
@@ -134,6 +153,7 @@ dotnet run --project ai-harness-tui -c Release
 | `Ui/Dashboard.cs` | レイアウト・`Live` ループ・キー処理・タブ・本体のビュー |
 | `Ui/StatusLine.cs` | 下部の帯（対象・ブランチ・版・daemon）とキー案内 |
 | `Ui/ProjectPopup.cs` | `p` のプロジェクト選択ポップアップ |
+| `Ui/UpdatePrompt.cs` | `u` の自己更新の確認モーダル |
 | `Ui/Term.cs` | 端末サイズと文字列整形（切り詰め・ディレクトリ名） |
 
 net10.0 / nullable 有効 / 暗黙 usings。描画は [Spectre.Console](https://github.com/spectreconsole/spectre.console)（マネージドのみ）。

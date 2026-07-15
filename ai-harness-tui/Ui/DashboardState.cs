@@ -71,6 +71,15 @@ internal sealed class DashboardState
     /// </summary>
     public string? Notice { get; private set; }
 
+    /// <summary>self-update の確認モーダルを表示しているか（<c>u</c> で開く）。</summary>
+    public bool UpdatePrompt { get; private set; }
+
+    /// <summary>
+    /// 確認を確定し自己更新へ進むと決めたか。<see cref="Dashboard"/> は Live を抜けた後にこれを見て
+    /// <see cref="TuiSelfUpdater.Run"/> を通常コンソールで実行する。
+    /// </summary>
+    public bool UpdateRequested { get; private set; }
+
     /// <summary>
     /// プロジェクト一覧を取り直し、選択中の対象の詳細も更新する。
     /// 回収などで選択中のプロジェクトが消えていたら実行体自身へ戻す。
@@ -160,6 +169,33 @@ internal sealed class DashboardState
 
     /// <summary>選択を確定せずポップアップを閉じる。</summary>
     public void ClosePopup() => PopupOpen = false;
+
+    /// <summary>
+    /// self-update の確認モーダルを開く。自己更新できない状態（<c>dotnet &lt;dll&gt;</c> 経由起動・
+    /// <c>git</c>／<c>dotnet</c> 不在）なら開かず、理由を <see cref="Notice"/> に残す。
+    /// </summary>
+    public void OpenUpdatePrompt()
+    {
+        if (!TuiSelfUpdater.CanSelfUpdate(out var reason))
+        {
+            Notice = reason;
+            return;
+        }
+        UpdatePrompt = true;
+    }
+
+    /// <summary>確認モーダルを閉じる（更新しない）。</summary>
+    public void CloseUpdatePrompt() => UpdatePrompt = false;
+
+    /// <summary>
+    /// 自己更新を確定する。<see cref="Dashboard"/> はこの後 Live を抜けて
+    /// <see cref="TuiSelfUpdater.Run"/> を実行する。
+    /// </summary>
+    public void ConfirmUpdate()
+    {
+        UpdatePrompt = false;
+        UpdateRequested = true;
+    }
 
     /// <summary>ポップアップのカーソルを動かす（範囲外へは出ない）。</summary>
     public void MovePopup(int delta) =>

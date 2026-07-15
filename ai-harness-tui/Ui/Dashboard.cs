@@ -60,7 +60,39 @@ internal static class Dashboard
             RunLive(state);
             AnsiConsole.Clear();
         }
+
+        // Live を抜けた後（通常画面に戻っている）。自己更新が要求されていれば、ここで実行して
+        // clone／publish の進捗をそのまま見せ、applier へハンドオフしてから終了する。
+        if (state.UpdateRequested)
+        {
+            return RunSelfUpdate();
+        }
         return 0;
+    }
+
+    /// <summary>
+    /// 自己更新を実行する。<see cref="TuiSelfUpdater.Run"/> が新バイナリを publish・検証して applier を
+    /// detached 起動したら、この TUI プロセスは終了して実行体ロックを解放する。
+    /// </summary>
+    private static int RunSelfUpdate()
+    {
+        AnsiConsole.MarkupLine("[bold]ai-harness-tui を自己更新します…[/]");
+        try
+        {
+            if (TuiSelfUpdater.Run())
+            {
+                AnsiConsole.MarkupLine(
+                    "[green]更新をバックグラウンドで適用中です。完了したら ai-harness-tui を再度起動してください。[/]");
+                return 0;
+            }
+            AnsiConsole.MarkupLine("[yellow]自己更新をスキップしました。[/]");
+            return 1;
+        }
+        catch (Exception ex)
+        {
+            AnsiConsole.MarkupLine($"[red]自己更新に失敗: {Markup.Escape(ex.Message)}[/]");
+            return 1;
+        }
     }
 
     private static void RunLive(DashboardState state)
@@ -115,7 +147,11 @@ internal static class Dashboard
     /// <summary>キーを処理する。終了したいとき <c>false</c>。</summary>
     private static bool HandleKey(ConsoleKey key, DashboardState state)
     {
-        // ポップアップは前面。開いている間は本体のキーを食わせない（nvim のモーダルと同じ）。
+        // モーダルは前面。開いている間は本体のキーを食わせない（nvim のモーダルと同じ）。
+        if (state.UpdatePrompt)
+        {
+            return HandleUpdatePromptKey(key, state);
+        }
         if (state.PopupOpen)
         {
             return HandlePopupKey(key, state);
@@ -157,8 +193,33 @@ internal static class Dashboard
             case ConsoleKey.F:
                 state.CycleFilter();
                 return true;
+            case ConsoleKey.U:
+                state.OpenUpdatePrompt();
+                return true;
             case ConsoleKey.R:
                 state.Reload();
+                return true;
+            default:
+                return true;
+        }
+    }
+
+    /// <summary>
+    /// self-update 確認モーダルのキー。確定（<c>Enter</c>／<c>y</c>）は <c>false</c> を返して Live を抜け、
+    /// <see cref="Run"/> が通常コンソールで自己更新を実行する。取消は本体へ戻す。
+    /// </summary>
+    private static bool HandleUpdatePromptKey(ConsoleKey key, DashboardState state)
+    {
+        switch (key)
+        {
+            case ConsoleKey.Enter:
+            case ConsoleKey.Y:
+                state.ConfirmUpdate();
+                return false;
+            case ConsoleKey.Escape:
+            case ConsoleKey.N:
+            case ConsoleKey.U:
+                state.CloseUpdatePrompt();
                 return true;
             default:
                 return true;
@@ -210,7 +271,10 @@ internal static class Dashboard
     private static void Render(Layout layout, DashboardState state)
     {
         layout["tabs"].Update(Tabs(state));
-        layout["body"].Update(state.PopupOpen ? ProjectPopup.Render(state) : Body(state));
+        IRenderable body = state.UpdatePrompt
+            ? UpdatePrompt.Render(state)
+            : state.PopupOpen ? ProjectPopup.Render(state) : Body(state);
+        layout["body"].Update(body);
         layout["status"].Update(StatusLine.Render(state, _version));
     }
 
