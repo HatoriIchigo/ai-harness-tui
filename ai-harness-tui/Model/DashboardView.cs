@@ -8,6 +8,9 @@ internal enum DashboardView
     /// <summary>選択中の対象のプラグイン。</summary>
     Plugins,
 
+    /// <summary>選択中の対象の LSP 稼働状況（無指定なら対応言語・候補サーバの一覧）。</summary>
+    Lsp,
+
     /// <summary>選択中の対象のログ。</summary>
     Log,
 }
@@ -16,10 +19,18 @@ internal enum DashboardView
 internal static class DashboardViews
 {
     /// <summary>上部ボタンに出す名前。</summary>
-    public static string Label(this DashboardView view) =>
-        view == DashboardView.Plugins ? "plugins" : "log";
+    public static string Label(this DashboardView view) => view switch
+    {
+        DashboardView.Plugins => "plugins",
+        DashboardView.Lsp => "lsp",
+        _ => "log",
+    };
 
-    /// <summary>もう一方のビュー（ボタンは 2 つなので切り替えは反転）。</summary>
-    public static DashboardView Other(this DashboardView view) =>
-        view == DashboardView.Plugins ? DashboardView.Log : DashboardView.Plugins;
+    /// <summary>次のビュー（plugins → lsp → log → plugins の順に巡回する）。</summary>
+    public static DashboardView Other(this DashboardView view) => view switch
+    {
+        DashboardView.Plugins => DashboardView.Lsp,
+        DashboardView.Lsp => DashboardView.Log,
+        _ => DashboardView.Plugins,
+    };
 }

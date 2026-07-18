@@ -5,7 +5,7 @@ using Spectre.Console.Rendering;
 namespace ai_harness_tui;
 
 /// <summary>
-/// 画面本体。上部に <c>plugins</c>／<c>log</c> のボタン（それだけ）、中央にそのどちらか 1 つ、下部に
+/// 画面本体。上部に <c>plugins</c>／<c>lsp</c>／<c>log</c> のボタン（それだけ）、中央にそのどれか 1 つ、下部に
 /// neovim 風のステータスライン（対象・ブランチ・版・daemon）を置き、<c>Live</c> で再描画し続ける。
 ///
 /// 状態を語るのはステータスライン（<see cref="StatusLine"/>）に一本化し、上部は「いまどのビューにいるか」
@@ -176,6 +176,9 @@ internal static class Dashboard
                 state.Show(DashboardView.Plugins);
                 return true;
             case ConsoleKey.D2:
+                state.Show(DashboardView.Lsp);
+                return true;
+            case ConsoleKey.D3:
                 state.Show(DashboardView.Log);
                 return true;
             case ConsoleKey.UpArrow:
@@ -283,7 +286,9 @@ internal static class Dashboard
     /// ここは「いまどのビューにいるか」しか語らない。
     /// </summary>
     private static IRenderable Tabs(DashboardState state) =>
-        new Markup($" {Button(state, DashboardView.Plugins)} {Button(state, DashboardView.Log)}");
+        new Markup(
+            $" {Button(state, DashboardView.Plugins)} {Button(state, DashboardView.Lsp)}"
+            + $" {Button(state, DashboardView.Log)}");
 
     /// <summary>選択中のボタンはステータスラインと同じ黄緑で塗り、両者が同じ画面の一部だと分かるようにする。</summary>
     private static string Button(DashboardState state, DashboardView view)
@@ -293,8 +298,12 @@ internal static class Dashboard
     }
 
     /// <summary>本体。ボタンで選ばれている 1 ビューだけを出す。</summary>
-    private static IRenderable Body(DashboardState state) =>
-        state.View == DashboardView.Plugins ? Plugins(state) : LogView.Render(state);
+    private static IRenderable Body(DashboardState state) => state.View switch
+    {
+        DashboardView.Plugins => Plugins(state),
+        DashboardView.Lsp => Lsp(state),
+        _ => LogView.Render(state),
+    };
 
     /// <summary>
     /// 実行体自身を選んでいるときは lib のインストール一覧なので、有効状態の代わりに説明を出す
@@ -336,6 +345,50 @@ internal static class Dashboard
     private static string EnabledMark(bool? enabled) =>
         enabled == true ? "[green]true[/]" : "[grey]false[/]";
 
+    /// <summary>
+    /// 対象無指定は <see cref="LspCatalog"/> のカタログ（言語・候補サーバ）、対象指定時は
+    /// <c>common.yml</c> の宣言と daemon 上の実際の稼働状況（状態・エラー）を出す。読み取り専用でカーソルは無い。
+    /// </summary>
+    private static IRenderable Lsp(DashboardState state)
+    {
+        var catalogView = state.Selected is null;
+        var table = new Table().Border(TableBorder.None).Expand();
+        table.AddColumn("language");
+        table.AddColumn("server");
+        if (!catalogView)
+        {
+            table.AddColumn("status");
+            table.AddColumn("error");
+        }
+
+        var errorWidth = LspErrorWidth();
+        foreach (var row in state.Lsp)
+        {
+            if (catalogView)
+            {
+                table.AddRow(Markup.Escape(row.Language), Markup.Escape(row.Server));
+            }
+            else
+            {
+                table.AddRow(
+                    Markup.Escape(row.Language),
+                    Markup.Escape(row.Server),
+                    StatusMark(row.Status),
+                    Markup.Escape(Term.Truncate(row.Error ?? "", errorWidth)));
+            }
+        }
+        return new Panel(table).Header(catalogView ? "lsp (catalog)" : "lsp").Expand();
+    }
+
+    /// <summary>稼働状況に応じた色。動いていれば緑、導入中は黄、失敗は赤、それ以外（未起動）は灰。</summary>
+    private static string StatusMark(string? status) => status switch
+    {
+        "Running" => "[green]Running[/]",
+        "Installing" => "[yellow]Installing[/]",
+        "Failed" => "[red]Failed[/]",
+        _ => $"[grey]{Markup.Escape(status ?? "-")}[/]",
+    };
+
     // ---- 端末サイズ ----
     //
     // BuildLayout の Size から逆算する。値をここに集約し、レイアウトを変えたらここだけ直せば済むように
@@ -353,6 +406,9 @@ internal static class Dashboard
     /// <summary>plugins テーブルの name 列と、テーブル・パネルの余白の合計。</summary>
     private const int PluginNameColumn = 32;
 
+    /// <summary>lsp テーブルの language・server・status 列と、テーブル・パネルの余白の合計。</summary>
+    private const int LspFixedColumns = 48;
+
     private const int MinLogRows = 5;
     private const int MinTextWidth = 10;
 
@@ -362,4 +418,7 @@ internal static class Dashboard
 
     /// <summary>プラグインの説明に使える桁数。</summary>
     private static int PluginDescriptionWidth() => Math.Max(MinTextWidth, Term.Width - PluginNameColumn);
+
+    /// <summary>lsp テーブルの error 列に使える桁数。</summary>
+    private static int LspErrorWidth() => Math.Max(MinTextWidth, Term.Width - LspFixedColumns);
 }

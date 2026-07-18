@@ -107,10 +107,16 @@ internal static class StatusLine
             return $"[red]{Markup.Escape(Term.Truncate(message, Term.Width - 2))}[/]";
         }
 
-        return state.View == DashboardView.Plugins
-            ? " [bold]p[/] 対象   [bold]Tab[/] 切替   [bold]jk[/] 選択   [bold]Space[/] 有効/無効   "
-                + "[bold]r[/] 再取得   [bold]u[/] 更新   [bold]q[/] 終了"
-            : $" [bold]p[/] 対象   [bold]Tab[/] 切替   [bold]jk[/] スクロール   "
-                + $"[bold]f[/] フィルタ: {state.Filter.Label()}   [bold]r[/] 再取得   [bold]u[/] 更新   [bold]q[/] 終了";
+        return state.View switch
+        {
+            DashboardView.Plugins =>
+                " [bold]p[/] 対象   [bold]Tab[/] 切替   [bold]jk[/] 選択   [bold]Space[/] 有効/無効   "
+                + "[bold]r[/] 再取得   [bold]u[/] 更新   [bold]q[/] 終了",
+            DashboardView.Lsp =>
+                " [bold]p[/] 対象   [bold]Tab[/] 切替   [bold]r[/] 再取得   [bold]u[/] 更新   [bold]q[/] 終了",
+            _ =>
+                $" [bold]p[/] 対象   [bold]Tab[/] 切替   [bold]jk[/] スクロール   "
+                + $"[bold]f[/] フィルタ: {state.Filter.Label()}   [bold]r[/] 再取得   [bold]u[/] 更新   [bold]q[/] 終了",
+        };
     }
 }

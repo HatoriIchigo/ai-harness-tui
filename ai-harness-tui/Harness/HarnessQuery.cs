@@ -82,6 +82,26 @@ internal static class HarnessQuery
             ?? $"{(enable ? "有効化" : "無効化")}に失敗しました。";
     }
 
+    /// <summary>
+    /// LSP の状況。<paramref name="target"/> 無指定は <see cref="LspCatalog"/> の対応言語・候補サーバ一覧
+    /// （<c>language | server</c> の 2 列。<see cref="LspRow.Status"/>／<see cref="LspRow.Error"/> は <c>null</c>）、
+    /// 指定時は <c>common.yml</c> の宣言と daemon 上の実際の稼働状況（4 列）。
+    /// </summary>
+    public static List<LspRow> QueryLsp(string? target)
+    {
+        var result = target is null
+            ? HarnessCli.Run("--lsp")
+            : HarnessCli.Run("--lsp", target);
+
+        return target is null
+            ? TableParser.ParseRows(result.Lines, 2)
+                .Select(cells => new LspRow(cells[0], cells[1], null, null))
+                .ToList()
+            : TableParser.ParseRows(result.Lines, 4)
+                .Select(cells => new LspRow(cells[0], cells[1], cells[2], cells[3]))
+                .ToList();
+    }
+
     /// <summary>新しい順のログを最大 <paramref name="take"/> 件取る。</summary>
     public static List<LogRow> QueryLogs(string? target, int take, LogFilter filter)
     {

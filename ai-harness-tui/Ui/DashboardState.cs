@@ -47,6 +47,9 @@ internal sealed class DashboardState
     /// <summary>plugins ビューのカーソル位置（有効化を切り替える行）。</summary>
     public int PluginIndex { get; private set; }
 
+    /// <summary>選択中の対象の LSP 状況（対象無指定なら対応言語・候補サーバのカタログ）。</summary>
+    public IReadOnlyList<LspRow> Lsp { get; private set; } = [];
+
     /// <summary>選択中の対象のログ（新しい順）。<see cref="Scroll"/> 件目から表示する。</summary>
     public IReadOnlyList<LogRow> Logs { get; private set; } = [];
 
@@ -256,6 +259,7 @@ internal sealed class DashboardState
         Plugins = HarnessQuery.QueryPlugins(Selected);
         // プラグインが増減してもカーソルが表からはみ出さないようにする。
         PluginIndex = Plugins.Count == 0 ? 0 : Math.Clamp(PluginIndex, 0, Plugins.Count - 1);
+        Lsp = HarnessQuery.QueryLsp(Selected);
         LoadLogs();
     }
 
